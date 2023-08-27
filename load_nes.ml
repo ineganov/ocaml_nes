@@ -16,9 +16,10 @@ let pp_bytes prefix buf list = printf "%s " prefix;
                                printf "\n"
 
 let fetch_segments (path : string) : (bytes * bytes) = 
-               let fd      = open_in path       in
-               let bbuf    = Bytes.create 32768 in
-               let ()      = try really_input fd bbuf 0 32768  with End_of_file -> printf "Got less than 32k!\n" in
+               let fd      = open_in path                in
+               let flen    = in_channel_length fd        in
+               let bbuf    = Bytes.create flen           in
+               let ()      = really_input fd bbuf 0 flen in (* reading the exact number of bytes does not throw EOFile *)
                let ()      = if not (chk_hdr bbuf) then raise Not_A_Nes_Fmt  in
                let prg_len = (cc bbuf 4) in
                let chr_len = (cc bbuf 5) in
