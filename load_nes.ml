@@ -21,8 +21,9 @@ let fetch_segments (path : string) : (bytes * bytes) =
                let ()      = try really_input fd bbuf 0 32768  with End_of_file -> printf "Got less than 32k!\n" in
                let ()      = if not (chk_hdr bbuf) then raise Not_A_Nes_Fmt  in
                let prg_len = (cc bbuf 4) in
-               let chr_len = (cc bbuf 5) in    
-               let ()      = printf "Num segments PRG: %d CHR: %d\n"  prg_len chr_len in
+               let chr_len = (cc bbuf 5) in
+               let flgs_6  = (cc bbuf 6) in
+               let ()      = printf "Num segments PRG: %d CHR: %d FLG6: %02x\n"  prg_len chr_len flgs_6 in
                       ( Bytes.sub bbuf 16 (prg_len * 16384) ,
                         Bytes.sub bbuf (16 + prg_len * 16384) (chr_len * 8192) )
 
@@ -43,6 +44,7 @@ type machine = {  mutable pc     : int ;
                   mutable rom    : bytes ;
                   mutable cycles : int ;
 
+                  mutable ppu_ctrl    : int ;
                   mutable ppu_wr_addr : int ;
                   mutable ppu_ram     : bytes ;
                 }
@@ -64,6 +66,7 @@ let mk_machine prg_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16384 - 4)
                               cycles = 0 ;
                               ram = Bytes.make 2048 '\000' ;
                               rom = prg_mem ;
+                              ppu_ctrl = 0;
                               ppu_wr_addr = 0 ;
                               ppu_ram = Bytes.make 2048 '\000' }
 
@@ -97,14 +100,28 @@ let show_flags cpu = let cap_str vs = List.map (fun (x,y) -> if x > 0 then Strin
 
 let show_cpu cpu = Printf.sprintf "ACC:%02X X:%02X Y:%02X SP:%02X -- %s" cpu.acc cpu.x cpu.y cpu.sp (show_flags cpu)
 
+let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
+                                   addr when addr >= 0x2000 && addr < 0x2400 -> Bytes.set_uint8 cpu.ppu_ram (addr land 0x3FF) v
+                                 | addr when addr >= 0x2800 && addr < 0x2C00 -> Bytes.set_uint8 cpu.ppu_ram ((addr land 0x3FF) lor 0x400) v
+                                 | other -> printf "PPU WR other: %04x\n" other
+
+let ppu_print_vram cpu = for y = 0 to 63 do
+                           for x = 0 to 31 do
+                             printf "%02x " (cc cpu.ppu_ram (32*y + x))
+                           done ;
+                           print_endline ""
+                         done
+
 let wr_byte cpu addr v = match addr with
                               addr when addr < 2048 -> printf "  MEM WR: %04x <- %02x\n" addr v ;
                                                        Bytes.set_uint8 cpu.ram addr v
                             
+                            | addr when addr = 0x2000 -> printf "PPU CTRL: %02x\n" v ; cpu.ppu_ctrl <- v
+
                             | addr when addr = 0x2006 -> cpu.ppu_wr_addr <- ((cpu.ppu_wr_addr land 0xFF) lsl 8) lor v
 
                             | addr when addr = 0x2007 -> printf "  PPU WR: %04x <- %02x\n" cpu.ppu_wr_addr v ;
-                                                          (* Bytes.set_uint8 cpu.ppu_ram (cpu.ppu_wr_addr - 0x3F00) v ; *)
+                                                         ppu_ram_wr_hmap cpu v ;
                                                          cpu.ppu_wr_addr <- 0xFFFF land (cpu.ppu_wr_addr + 1) ;
                             | _  -> ()
 
@@ -174,8 +191,8 @@ let nmi cpu = let nmi_vect = rd_word cpu 0xFFFA in
                   wr_byte cpu (stack_ea cpu - 1)  (0xFF   land (cpu.pc - 1))  ;
                   wr_byte cpu (stack_ea cpu - 2) (status_byte cpu) ;
                   cpu.sp <- cpu.sp - 3 ;
-                  
-                  cpu.pc <- nmi_vect )
+                  cpu.pc <- nmi_vect ;
+                  print_endline "NMI" )
 
 let exec cpu op ea immed = let arg = match ea with 
                                 Some (addr) -> rd_byte cpu addr (* FIXME: suppress read on stores*)
@@ -366,6 +383,8 @@ let step cpu = let Instr (op, mode, sz, cnt) as inst  = decode (rd_byte cpu cpu.
                 cpu.cycles <- cpu.cycles + cnt ;
                 exec cpu op ea param
 
+let run_cycles cpu n = cpu.cycles <- 0 ;
+                       while cpu.cycles < n do step cpu done
 
 let main path = let (prg, chr) = fetch_segments path in
                 let cpu = mk_machine prg             in
@@ -373,14 +392,15 @@ let main path = let (prg, chr) = fetch_segments path in
                 pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
                 pp_bytes "CHR:" chr [0;1;2] ;
                 printf "PC: %x\n" cpu.pc ;
-                for i = 0 to 45000 do
-                  step cpu
+
+                for i = 0 to 60 do
+                  printf "FRAME %d\n" i;
+                  run_cycles cpu 28333 ;
+                  if (cpu.ppu_ctrl land 0x80) <> 0 then nmi cpu ;
                 done;
-                nmi cpu ;
-                
-                for i = 0 to 45000 do
-                  step cpu ;
-                done;
+
+                ppu_print_vram cpu;
+
                 printf "Done %d cycles. Bye!\n" cpu.cycles ;;
 
 main Sys.argv.(1) ;;
