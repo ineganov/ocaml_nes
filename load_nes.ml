@@ -1,6 +1,7 @@
 open Decode
 
 let printf     = Printf.printf
+let fprintf    = Printf.fprintf
 let cc buf idx = Char.code (Bytes.get buf idx)
 
 
@@ -106,12 +107,16 @@ let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
                                  | addr when addr >= 0x2800 && addr < 0x2C00 -> Bytes.set_uint8 cpu.ppu_ram ((addr land 0x3FF) lor 0x400) v
                                  | other -> printf "PPU WR other: %04x\n" other
 
-let ppu_print_vram cpu = for y = 0 to 63 do
-                           for x = 0 to 31 do
-                             printf "%02x " (cc cpu.ppu_ram (32*y + x))
-                           done ;
-                           print_endline ""
-                         done
+let ppu_print_vram cpu file = let fd = open_out file in
+                                fprintf fd "P2 32 64 255\n" ;
+                                for y = 0 to 63 do
+                                   for x = 0 to 31 do
+                                      (* fine_y = y land 0xF *)
+                                      fprintf fd "%3d " (cc cpu.ppu_ram (32*y + x)) ;
+                                   done ;
+                                   fprintf fd "\n"
+                                done ;
+                                close_out fd
 
 let wr_byte cpu addr v = match addr with
                               addr when addr < 2048 -> printf "  MEM WR: %04x <- %02x\n" addr v ;
@@ -400,7 +405,7 @@ let main path = let (prg, chr) = fetch_segments path in
                   if (cpu.ppu_ctrl land 0x80) <> 0 then nmi cpu ;
                 done;
 
-                ppu_print_vram cpu;
+                ppu_print_vram cpu "img.ppm";
 
                 printf "Done %d cycles. Bye!\n" cpu.cycles ;;
 
