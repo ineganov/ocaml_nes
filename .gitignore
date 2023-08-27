@@ -4,3 +4,4 @@ load_nes_opt
 *.cmx
 *.cmo
 *.cmi
+run.log

@@ -42,6 +42,9 @@ type machine = {  mutable pc     : int ;
                   mutable ram    : bytes ;
                   mutable rom    : bytes ;
                   mutable cycles : int ;
+
+                  mutable ppu_wr_addr : int ;
+                  mutable ppu_ram     : bytes ;
                 }
 
 
@@ -60,7 +63,9 @@ let mk_machine prg_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16384 - 4)
                               flg_c  = 0 ;
                               cycles = 0 ;
                               ram = Bytes.make 2048 '\000' ;
-                              rom = prg_mem }
+                              rom = prg_mem ;
+                              ppu_wr_addr = 0 ;
+                              ppu_ram = Bytes.make 2048 '\000' }
 
 let status_byte cpu = (cpu.flg_n lsl 7)
                   lor (cpu.flg_v lsl 6)
@@ -93,7 +98,14 @@ let show_flags cpu = let cap_str vs = List.map (fun (x,y) -> if x > 0 then Strin
 let show_cpu cpu = Printf.sprintf "ACC:%02X X:%02X Y:%02X SP:%02X -- %s" cpu.acc cpu.x cpu.y cpu.sp (show_flags cpu)
 
 let wr_byte cpu addr v = match addr with
-                              addr when addr < 2048 -> Bytes.set_uint8 cpu.ram addr v
+                              addr when addr < 2048 -> printf "  MEM WR: %04x <- %02x\n" addr v ;
+                                                       Bytes.set_uint8 cpu.ram addr v
+                            
+                            | addr when addr = 0x2006 -> cpu.ppu_wr_addr <- ((cpu.ppu_wr_addr land 0xFF) lsl 8) lor v
+
+                            | addr when addr = 0x2007 -> printf "  PPU WR: %04x <- %02x\n" cpu.ppu_wr_addr v ;
+                                                          (* Bytes.set_uint8 cpu.ppu_ram (cpu.ppu_wr_addr - 0x3F00) v ; *)
+                                                         cpu.ppu_wr_addr <- 0xFFFF land (cpu.ppu_wr_addr + 1) ;
                             | _  -> ()
 
 let rd_byte cpu addr = match addr with
@@ -154,6 +166,13 @@ let set_y_nz cpu v = let arg = 0xFF land v in
 let wr_mem_nz cpu addr v = wr_byte cpu addr v;
                            cpu.flg_n <- (0x80 land v) lsr 7;
                            cpu.flg_z <- if v = 0 then 1 else 0
+
+let nmi cpu = let nmi_vect = rd_word cpu 0xFFFA in
+                ( cpu.sp <- cpu.sp - 4 ;
+                  wr_byte cpu  cpu.sp       (status_byte cpu) ;
+                  wr_byte cpu (cpu.sp + 1)  (0xFF   land (cpu.pc - 1))  ;
+                  wr_byte cpu (cpu.sp + 2) ((0xFF00 land (cpu.pc - 1)) lsr 8) ;
+                  cpu.pc <- nmi_vect )
 
 let exec cpu op ea immed = let arg = match ea with 
                                 Some (addr) -> rd_byte cpu addr (* FIXME: suppress read on stores*)
@@ -291,11 +310,11 @@ let exec cpu op ea immed = let arg = match ea with
                                    cpu.flg_c <- cpu.acc land 1;
                                    set_acc_nz cpu (0xFF land shifted) ) )
 
-    | RTI -> let rti_flags = (rd_byte cpu cpu.sp)         in
-             let new_pc    = 1 + (rd_word cpu cpu.sp + 1) in
+    | RTI -> let rti_flags = (rd_byte cpu (cpu.sp + 1)   in
+             let new_pc    = 1 + (rd_word cpu cpu.sp + 2) in
               ( set_flags cpu rti_flags ;
                 cpu.pc <- new_pc ;
-                cpu.sp <- cpu.sp + 3 )
+                cpu.sp <- cpu.sp + 4 )
 
     | RTS -> let new_pc = 1 + (rd_word cpu cpu.sp) in
               ( cpu.pc <- new_pc ;
@@ -351,8 +370,13 @@ let main path = let (prg, chr) = fetch_segments path in
                 pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
                 pp_bytes "CHR:" chr [0;1;2] ;
                 printf "PC: %x\n" cpu.pc ;
-                for i = 0 to 1000000 do
+                for i = 0 to 43000 do
                   step cpu
+                done;
+                nmi cpu ;
+                
+                for i = 0 to 3000 do
+                  step cpu ;
                 done;
                 printf "Done %d cycles. Bye!\n" cpu.cycles ;;
 
