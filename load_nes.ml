@@ -108,6 +108,8 @@ let wr_byte cpu addr v = match addr with
                                                          cpu.ppu_wr_addr <- 0xFFFF land (cpu.ppu_wr_addr + 1) ;
                             | _  -> ()
 
+let stack_ea cpu = cpu.sp lor 0x0100
+
 let rd_byte cpu addr = match addr with
                            addr when addr < 2048           -> cc cpu.ram addr
                          | addr when addr = 0x2002         -> 0x80
@@ -168,10 +170,11 @@ let wr_mem_nz cpu addr v = wr_byte cpu addr v;
                            cpu.flg_z <- if v = 0 then 1 else 0
 
 let nmi cpu = let nmi_vect = rd_word cpu 0xFFFA in
-                ( cpu.sp <- cpu.sp - 4 ;
-                  wr_byte cpu  cpu.sp       (status_byte cpu) ;
-                  wr_byte cpu (cpu.sp + 1)  (0xFF   land (cpu.pc - 1))  ;
-                  wr_byte cpu (cpu.sp + 2) ((0xFF00 land (cpu.pc - 1)) lsr 8) ;
+                ( wr_byte cpu (stack_ea cpu - 0) ((0xFF00 land (cpu.pc - 1)) lsr 8) ;
+                  wr_byte cpu (stack_ea cpu - 1)  (0xFF   land (cpu.pc - 1))  ;
+                  wr_byte cpu (stack_ea cpu - 2) (status_byte cpu) ;
+                  cpu.sp <- cpu.sp - 3 ;
+                  
                   cpu.pc <- nmi_vect )
 
 let exec cpu op ea immed = let arg = match ea with 
@@ -254,9 +257,9 @@ let exec cpu op ea immed = let arg = match ea with
 
     | JMP ->  cpu.pc <- (Option.get ea)
 
-    | JSR -> ( cpu.sp <- cpu.sp - 2 ;
-               wr_byte cpu  cpu.sp      (0xFF    land (cpu.pc - 1)) ;
-               wr_byte cpu (cpu.sp + 1) ((0xFF00 land (cpu.pc - 1)) lsr 8) ;
+    | JSR -> ( wr_byte cpu (stack_ea cpu - 0) ((0xFF00 land (cpu.pc - 1)) lsr 8)  ;
+               wr_byte cpu (stack_ea cpu - 1)  (0xFF   land (cpu.pc - 1)) ;
+               cpu.sp <- cpu.sp - 2 ;
                cpu.pc <- (Option.get ea) )
 
     | LDA -> set_acc_nz cpu arg
@@ -278,17 +281,17 @@ let exec cpu op ea immed = let arg = match ea with
 
     | ORA -> set_acc_nz cpu (cpu.acc lor arg)
 
-    | PHA -> ( wr_byte cpu cpu.sp cpu.acc ;
+    | PHA -> ( wr_byte cpu (stack_ea cpu) cpu.acc ;
                cpu.sp <- cpu.sp - 1 )
 
-    | PHP -> ( wr_byte cpu cpu.sp (status_byte cpu) ;
+    | PHP -> ( wr_byte cpu (stack_ea cpu) (status_byte cpu) ;
                cpu.sp <- cpu.sp - 1 )
 
     | PLA -> ( cpu.sp <- cpu.sp + 1 ;
-               set_acc_nz cpu (rd_byte cpu cpu.sp ) )
+               set_acc_nz cpu (rd_byte cpu (stack_ea cpu) ) )
 
     | PLP -> ( cpu.sp <- cpu.sp + 1 ;
-               set_flags cpu (rd_byte cpu cpu.sp ) )
+               set_flags cpu (rd_byte cpu (stack_ea cpu) ) )
 
     | ROL -> ( match ea with
                  Some(addr) -> ( let shifted   = (arg lsl 1) lor cpu.flg_c  in (* memory argument *)
@@ -310,14 +313,14 @@ let exec cpu op ea immed = let arg = match ea with
                                    cpu.flg_c <- cpu.acc land 1;
                                    set_acc_nz cpu (0xFF land shifted) ) )
 
-    | RTI -> let rti_flags = (rd_byte cpu (cpu.sp + 1)   in
-             let new_pc    = 1 + (rd_word cpu cpu.sp + 2) in
+    | RTI -> let rti_flags = rd_byte cpu (stack_ea cpu + 1) in
+             let new_pc    = rd_word cpu (stack_ea cpu + 2) in
               ( set_flags cpu rti_flags ;
-                cpu.pc <- new_pc ;
-                cpu.sp <- cpu.sp + 4 )
+                cpu.pc <- new_pc + 1;
+                cpu.sp <- cpu.sp + 3 )
 
-    | RTS -> let new_pc = 1 + (rd_word cpu cpu.sp) in
-              ( cpu.pc <- new_pc ;
+    | RTS -> let new_pc = rd_word cpu (stack_ea cpu + 1) in
+              ( cpu.pc <- new_pc + 1 ;
                 cpu.sp <- cpu.sp + 2 )
 
     | SBC -> let n_arg = 0xFF land ((0xFF lxor arg) + cpu.flg_c) in
@@ -370,12 +373,12 @@ let main path = let (prg, chr) = fetch_segments path in
                 pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
                 pp_bytes "CHR:" chr [0;1;2] ;
                 printf "PC: %x\n" cpu.pc ;
-                for i = 0 to 43000 do
+                for i = 0 to 45000 do
                   step cpu
                 done;
                 nmi cpu ;
                 
-                for i = 0 to 3000 do
+                for i = 0 to 45000 do
                   step cpu ;
                 done;
                 printf "Done %d cycles. Bye!\n" cpu.cycles ;;
