@@ -5,3 +5,5 @@ load_nes_opt
 *.cmo
 *.cmi
 run.log
+img.ppm
+img.txt

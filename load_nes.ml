@@ -46,13 +46,14 @@ type machine = {  mutable pc     : int ;
                   mutable rom    : bytes ;
                   mutable cycles : int ;
 
+                  mutable chr_rom     : bytes ;
                   mutable ppu_ctrl    : int ;
                   mutable ppu_wr_addr : int ;
                   mutable ppu_ram     : bytes ;
                 }
 
 
-let mk_machine prg_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16384 - 4) in
+let mk_machine prg_mem chr_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16384 - 4) in
                             { pc     = reset_vec ;
                               sp     = 0xFD ;
                               acc    = 0 ;
@@ -68,6 +69,7 @@ let mk_machine prg_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16384 - 4)
                               cycles = 0 ;
                               ram = Bytes.make 2048 '\000' ;
                               rom = prg_mem ;
+                              chr_rom = chr_mem ;
                               ppu_ctrl = 0;
                               ppu_wr_addr = 0 ;
                               ppu_ram = Bytes.make 2048 '\000' }
@@ -107,12 +109,30 @@ let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
                                  | addr when addr >= 0x2800 && addr < 0x2C00 -> Bytes.set_uint8 cpu.ppu_ram ((addr land 0x3FF) lor 0x400) v
                                  | other -> printf "PPU WR other: %04x\n" other
 
+let ppu_draw_vram cpu file = let fd = open_out file in
+                                fprintf fd "P2 256 512 3\n" ;
+                                for y = 0 to 511 do
+                                   for x = 0 to 31 do
+                                      let chr_idx      = cc cpu.ppu_ram (32 * (y lsr 3) + x)              in
+                                      let slice_idx    = y land 0x7                                       in
+                                      let chr_addr     = 4096 + chr_idx * 16 + slice_idx                  in
+                                      let sl_lo        = cc cpu.chr_rom (chr_addr + 0)                    in
+                                      let sl_hi        = cc cpu.chr_rom (chr_addr + 8)                    in
+                                      let bit_col bit  = (((sl_hi lsr (7-bit)) land 1) lsl 1) lor
+                                                          ((sl_lo lsr (7-bit)) land 1)                    in
+
+                                        List.iter (fun l -> fprintf fd "%1d " (bit_col l)) [0; 1; 2; 3; 4; 5; 6; 7] ;
+
+                                        (* printf "%s: x=%d y=%d y_lsr=%d %04X -> %02X\n" file x y (y lsr 4) (32 * (y lsr 4) + x) chr_idx ; *)
+                                   done ;
+                                   fprintf fd "\n" ;
+                                done ;
+                                close_out fd
+
 let ppu_print_vram cpu file = let fd = open_out file in
-                                fprintf fd "P2 32 64 255\n" ;
                                 for y = 0 to 63 do
                                    for x = 0 to 31 do
-                                      (* fine_y = y land 0xF *)
-                                      fprintf fd "%3d " (cc cpu.ppu_ram (32*y + x)) ;
+                                      fprintf fd "%02X " (cc cpu.ppu_ram (32 * y + x))
                                    done ;
                                    fprintf fd "\n"
                                 done ;
@@ -392,21 +412,23 @@ let step cpu = let Instr (op, mode, sz, cnt) as inst  = decode (rd_byte cpu cpu.
 let run_cycles cpu n = cpu.cycles <- 0 ;
                        while cpu.cycles < n do step cpu done
 
-let main path = let (prg, chr) = fetch_segments path in
-                let cpu = mk_machine prg             in
-                pp_bytes "PRG END:" prg [16384 - 1; 16384 - 2; 16384 - 3; 16384 - 4; 16384 - 5; 16384 - 6; ] ;
-                pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
-                pp_bytes "CHR:" chr [0;1;2] ;
-                printf "PC: %x\n" cpu.pc ;
+let main fr path = let (prg, chr) = fetch_segments path in
+                   let cpu = mk_machine prg chr         in
 
-                for i = 0 to 60 do
-                  printf "FRAME %d\n" i;
-                  run_cycles cpu 28333 ;
-                  if (cpu.ppu_ctrl land 0x80) <> 0 then nmi cpu ;
-                done;
+                   pp_bytes "PRG END:" prg [16384 - 1; 16384 - 2; 16384 - 3; 16384 - 4; 16384 - 5; 16384 - 6; ] ;
+                   pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
+                   pp_bytes "CHR:" chr [0;1;2] ;
+                   printf "PC: %x\n" cpu.pc ;
+    
+                   for i = 0 to (int_of_string fr) do
+                     printf "FRAME %d\n" i;
+                     run_cycles cpu 28333 ;
+                     if (cpu.ppu_ctrl land 0x80) <> 0 then nmi cpu ;
+                   done;
+    
+                   ppu_draw_vram cpu "img.ppm";
+                   ppu_print_vram cpu "img.txt";
+    
+                   printf "Done %d cycles. Bye!\n" cpu.cycles ;;
 
-                ppu_print_vram cpu "img.ppm";
-
-                printf "Done %d cycles. Bye!\n" cpu.cycles ;;
-
-main Sys.argv.(1) ;;
+main Sys.argv.(1) Sys.argv.(2) ;;
