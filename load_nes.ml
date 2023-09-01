@@ -111,19 +111,20 @@ let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
 
 let ppu_draw_vram cpu file = let fd = open_out file in
                                 fprintf fd "P2 256 512 3\n" ;
-                                for y = 0 to 511 do
-                                   for x = 0 to 31 do
-                                      let chr_idx      = cc cpu.ppu_ram (32 * (y lsr 3) + x)              in
-                                      let slice_idx    = y land 0x7                                       in
-                                      let chr_addr     = 4096 + chr_idx * 16 + slice_idx                  in
-                                      let sl_lo        = cc cpu.chr_rom (chr_addr + 0)                    in
-                                      let sl_hi        = cc cpu.chr_rom (chr_addr + 8)                    in
-                                      let bit_col bit  = (((sl_hi lsr (7-bit)) land 1) lsl 1) lor
-                                                          ((sl_lo lsr (7-bit)) land 1)                    in
+                                for pix_y = 0 to 511 do  (* up to 239 for single screen *)
+                                   for tile_x = 0 to 31 do
+                                      let tile_y       = pix_y lsr 3                                      in
+                                      let nm_tbl_byte  = cc cpu.ppu_ram (32 * tile_y + tile_x)            in
+                                      let fine_y       = pix_y land 0x7                                   in
+                                      let ptrn_addr    = 4096 + nm_tbl_byte * 16 + fine_y                 in
+                                      let ptrn_byte_lo = cc cpu.chr_rom (ptrn_addr + 0)                   in
+                                      let ptrn_byte_hi = cc cpu.chr_rom (ptrn_addr + 8)                   in
+                                      let bit_col bit  = (((ptrn_byte_hi lsr (7-bit)) land 1) lsl 1) lor
+                                                          ((ptrn_byte_lo lsr (7-bit)) land 1)             in
 
                                         List.iter (fun l -> fprintf fd "%1d " (bit_col l)) [0; 1; 2; 3; 4; 5; 6; 7] ;
 
-                                        (* printf "%s: x=%d y=%d y_lsr=%d %04X -> %02X\n" file x y (y lsr 4) (32 * (y lsr 4) + x) chr_idx ; *)
+                                        (* printf "%s: x=%d y=%d y_lsr=%d %04X -> %02X\n" file x y (y lsr 4) (32 * (y lsr 4) + x) nm_tbl_byte ; *)
                                    done ;
                                    fprintf fd "\n" ;
                                 done ;
