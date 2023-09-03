@@ -64,10 +64,12 @@ type machine = {  mutable pc     : int ;
                   mutable ppu_ctrl    : int ;
                   mutable ppu_wr_addr : int ;
                   mutable ppu_ram     : bytes ;
+                  mutable plt_idx     : int array ;
+                  mutable plt         : (int * int * int) array
                 }
 
 
-let mk_machine prg_mem chr_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16384 - 4) in
+let mk_machine prg_mem chr_mem plt_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16384 - 4) in
                             { pc     = reset_vec ;
                               sp     = 0xFD ;
                               acc    = 0 ;
@@ -86,7 +88,9 @@ let mk_machine prg_mem chr_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16
                               chr_rom = chr_mem ;
                               ppu_ctrl = 0;
                               ppu_wr_addr = 0 ;
-                              ppu_ram = Bytes.make 2048 '\000' }
+                              ppu_ram = Bytes.make 2048 '\000' ;
+                              plt_idx = Array.make 32 0 ;
+                              plt = plt_mem}
 
 let status_byte cpu = (cpu.flg_n lsl 7)
                   lor (cpu.flg_v lsl 6)
@@ -121,10 +125,11 @@ let show_cpu cpu = Printf.sprintf "ACC:%02X X:%02X Y:%02X SP:%02X -- %s" cpu.acc
 let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
                                    addr when addr >= 0x2000 && addr < 0x2400 -> Bytes.set_uint8 cpu.ppu_ram (addr land 0x3FF) v
                                  | addr when addr >= 0x2800 && addr < 0x2C00 -> Bytes.set_uint8 cpu.ppu_ram ((addr land 0x3FF) lor 0x400) v
+                                 | addr when addr >= 0x3f00 && addr < 0x3f20 -> cpu.plt_idx.(addr land 0x1F) <- v
                                  | other -> printf "PPU WR other: %04x\n" other
 
 let ppu_draw_vram cpu file = let fd = open_out file in
-                                fprintf fd "P2 256 512 15\n" ;
+                                fprintf fd "P3 256 512 255\n" ;
                                 for pix_y = 0 to 511 do  (* up to 239 for single screen *)
                                    for tile_x = 0 to 31 do
                                       let tile_y       = pix_y lsr 3                                      in
@@ -136,9 +141,9 @@ let ppu_draw_vram cpu file = let fd = open_out file in
                                       let ptrn_byte_hi = cc cpu.chr_rom (ptrn_addr + 8)                   in
                                       let attr_addr    = 32 * 30 + 8 * (tile_y_mod lsr 2) + (tile_x lsr 2)    in
                                       let attr_byte    = ( match pix_y with
-                                                           | y when y < 240 -> cc cpu.ram attr_addr
+                                                           | y when y < 240 -> cc cpu.ppu_ram attr_addr
                                                            | y when y >= 256 && y < 496
-                                                                           -> cc cpu.ram (attr_addr + 1024)
+                                                                           -> cc cpu.ppu_ram (attr_addr + 1024)
                                                            | _ -> 0 )                                     in
                                       let is_rt        = (tile_x land 2) lsr 1                            in
                                       let is_bot       = (tile_y land 2) lsr 1                            in
@@ -148,8 +153,9 @@ let ppu_draw_vram cpu file = let fd = open_out file in
                                       let bit_col bit  =  (attr_bits lsl 2) lor
                                                           (((ptrn_byte_hi lsr (7-bit)) land 1) lsl 1) lor
                                                           ((ptrn_byte_lo lsr (7-bit)) land 1)             in
+                                      let colours      = List.map (fun l -> cpu.plt.( cpu.plt_idx.(bit_col l))) [0; 1; 2; 3; 4; 5; 6; 7] in
 
-                                        List.iter (fun l -> fprintf fd "%1d " (bit_col l)) [0; 1; 2; 3; 4; 5; 6; 7] ;
+                                        List.iter (fun (r,g,b) -> fprintf fd "%3d %3d %3d  " r g b) colours ;
 
                                         (* printf "%s: x=%d y=%d y_lsr=%d %04X -> %02X\n" file x y (y lsr 4) (32 * (y lsr 4) + x) nm_tbl_byte ; *)
                                    done ;
@@ -442,7 +448,7 @@ let run_cycles cpu n = cpu.cycles <- 0 ;
 
 let main fr path = let (prg, chr) = fetch_segments path      in
                    let plt        = load_palette "FCEUX.pal" in
-                   let cpu = mk_machine prg chr              in
+                   let cpu = mk_machine prg chr plt          in
 
                    pp_bytes "PRG END:" prg [16384 - 1; 16384 - 2; 16384 - 3; 16384 - 4; 16384 - 5; 16384 - 6; ] ;
                    pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
