@@ -6,6 +6,7 @@ let cc buf idx = Char.code (Bytes.get buf idx)
 
 
 exception Not_A_Nes_Fmt
+exception Not_A_Nes_Palette
 exception Break_Instn
 exception Illegal_Instn
 exception ShouldNeverHappen
@@ -28,6 +29,19 @@ let fetch_segments (path : string) : (bytes * bytes) =
                let ()      = printf "Num segments PRG: %d CHR: %d FLG6: %02x\n"  prg_len chr_len flgs_6 in
                       ( Bytes.sub bbuf 16 (prg_len * 16384) ,
                         Bytes.sub bbuf (16 + prg_len * 16384) (chr_len * 8192) )
+
+let load_palette path = let fd    = open_in path                in
+                        let flen  = in_channel_length fd        in
+                        let bbuf  = Bytes.create flen           in
+                        let ()    = really_input fd bbuf 0 flen in
+                        let arr   = Array.make 64 (0,0,0)       in
+                          if flen <> 192 then raise Not_A_Nes_Palette ;
+                          for idx = 0 to 63 do
+                            arr.(idx) <- (Bytes.get_uint8 bbuf (idx * 3 + 0),
+                                          Bytes.get_uint8 bbuf (idx * 3 + 1),
+                                          Bytes.get_uint8 bbuf (idx * 3 + 2))
+                          done ;
+                          arr
 
 
 type machine = {  mutable pc     : int ;
@@ -110,16 +124,29 @@ let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
                                  | other -> printf "PPU WR other: %04x\n" other
 
 let ppu_draw_vram cpu file = let fd = open_out file in
-                                fprintf fd "P2 256 512 3\n" ;
+                                fprintf fd "P2 256 512 15\n" ;
                                 for pix_y = 0 to 511 do  (* up to 239 for single screen *)
                                    for tile_x = 0 to 31 do
                                       let tile_y       = pix_y lsr 3                                      in
+                                      let tile_y_mod   = tile_y land 0x1F                                 in
                                       let nm_tbl_byte  = cc cpu.ppu_ram (32 * tile_y + tile_x)            in
                                       let fine_y       = pix_y land 0x7                                   in
                                       let ptrn_addr    = 4096 + nm_tbl_byte * 16 + fine_y                 in
                                       let ptrn_byte_lo = cc cpu.chr_rom (ptrn_addr + 0)                   in
                                       let ptrn_byte_hi = cc cpu.chr_rom (ptrn_addr + 8)                   in
-                                      let bit_col bit  = (((ptrn_byte_hi lsr (7-bit)) land 1) lsl 1) lor
+                                      let attr_addr    = 32 * 30 + 8 * (tile_y_mod lsr 2) + (tile_x lsr 2)    in
+                                      let attr_byte    = ( match pix_y with
+                                                           | y when y < 240 -> cc cpu.ram attr_addr
+                                                           | y when y >= 256 && y < 496
+                                                                           -> cc cpu.ram (attr_addr + 1024)
+                                                           | _ -> 0 )                                     in
+                                      let is_rt        = (tile_x land 2) lsr 1                            in
+                                      let is_bot       = (tile_y land 2) lsr 1                            in
+                                      let shamt        = 2 * (2 * is_bot + is_rt)                         in
+                                      let attr_bits    = 3 land (attr_byte lsr shamt)                     in
+
+                                      let bit_col bit  =  (attr_bits lsl 2) lor
+                                                          (((ptrn_byte_hi lsr (7-bit)) land 1) lsl 1) lor
                                                           ((ptrn_byte_lo lsr (7-bit)) land 1)             in
 
                                         List.iter (fun l -> fprintf fd "%1d " (bit_col l)) [0; 1; 2; 3; 4; 5; 6; 7] ;
@@ -413,14 +440,19 @@ let step cpu = let Instr (op, mode, sz, cnt) as inst  = decode (rd_byte cpu cpu.
 let run_cycles cpu n = cpu.cycles <- 0 ;
                        while cpu.cycles < n do step cpu done
 
-let main fr path = let (prg, chr) = fetch_segments path in
-                   let cpu = mk_machine prg chr         in
+let main fr path = let (prg, chr) = fetch_segments path      in
+                   let plt        = load_palette "FCEUX.pal" in
+                   let cpu = mk_machine prg chr              in
 
                    pp_bytes "PRG END:" prg [16384 - 1; 16384 - 2; 16384 - 3; 16384 - 4; 16384 - 5; 16384 - 6; ] ;
                    pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
                    pp_bytes "CHR:" chr [0;1;2] ;
                    printf "PC: %x\n" cpu.pc ;
     
+                   for i = 0 to 63 do
+                    let (r,g,b) = plt.(i) in printf "%d -> (%02x, %02x, %02x)\n" i r g b
+                   done;
+
                    for i = 0 to (int_of_string fr) do
                      printf "FRAME %d\n" i;
                      run_cycles cpu 28333 ;
