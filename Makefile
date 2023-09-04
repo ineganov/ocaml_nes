@@ -22,4 +22,6 @@ load_nes: decode.cmi decode.cmo load_nes.cmo
 opt: decode.ml decode.mli load_nes.ml
 	ocamlopt -O2 -o load_nes_opt decode.ml load_nes.ml
 
-
+# run with export OCAMLRUNPARAM=b
+dbg: decode.ml decode.mli load_nes.ml
+	ocamlopt -g -o load_nes_opt decode.ml load_nes.ml
