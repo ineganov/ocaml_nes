@@ -133,22 +133,22 @@ let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
                                  | other -> printf "PPU WR other: %04x\n" other
 
 let ppu_draw_vram cpu file = let fd = open_out file in
-                                fprintf fd "P3 256 512 255\n" ;
-                                for pix_y = 0 to 511 do  (* up to 239 for single screen *)
+                                fprintf fd "P3 256 240 255\n" ;
+                                for pix_y = 0 to 239 do
                                    for tile_x = 0 to 31 do
-                                      let tile_y       = pix_y lsr 3                                      in
-                                      let tile_y_mod   = tile_y land 0x1F                                 in
-                                      let nm_tbl_byte  = cc cpu.ppu_ram (32 * tile_y + tile_x)            in
-                                      let fine_y       = pix_y land 0x7                                   in
+                                      let scrolled_y   = pix_y + cpu.ppu_scrl_y                           in
+                                      let tile_y       = scrolled_y lsr 3                                 in
+                                      let fine_y       = scrolled_y land 0x7                              in
+                                      let tile_y_loc   = if tile_y > 29 then tile_y - 30 else tile_y      in
+                                      let nm_tbl_start = (cpu.ppu_ctrl land 2) lsr 1                      in
+                                      let nm_tbl_ofst  = if tile_y > 29 then 1 lxor nm_tbl_start 
+                                                                        else nm_tbl_start                 in
+                                      let nm_tbl_byte  = cc cpu.ppu_ram (nm_tbl_ofst * 1024 + 32 * tile_y_loc + tile_x) in
                                       let ptrn_addr    = 4096 + nm_tbl_byte * 16 + fine_y                 in
                                       let ptrn_byte_lo = cc cpu.chr_rom (ptrn_addr + 0)                   in
                                       let ptrn_byte_hi = cc cpu.chr_rom (ptrn_addr + 8)                   in
-                                      let attr_addr    = 32 * 30 + 8 * (tile_y_mod lsr 2) + (tile_x lsr 2)    in
-                                      let attr_byte    = ( match pix_y with
-                                                           | y when y < 240 -> cc cpu.ppu_ram attr_addr
-                                                           | y when y >= 256 && y < 496
-                                                                           -> cc cpu.ppu_ram (attr_addr + 1024)
-                                                           | _ -> 0 )                                     in
+                                      let attr_addr    = 32 * 30 + 8 * (tile_y_loc lsr 2) + (tile_x lsr 2)    in
+                                      let attr_byte    = cc cpu.ppu_ram (nm_tbl_ofst * 1024 + attr_addr)  in
                                       let is_rt        = (tile_x land 2) lsr 1                            in
                                       let is_bot       = (tile_y land 2) lsr 1                            in
                                       let shamt        = 2 * (2 * is_bot + is_rt)                         in
