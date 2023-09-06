@@ -62,6 +62,8 @@ type machine = {  mutable pc     : int ;
 
                   mutable chr_rom     : bytes ;
                   mutable ppu_ctrl    : int ;
+                  mutable ppu_scrl_x  : int ;
+                  mutable ppu_scrl_y  : int ;
                   mutable ppu_wr_addr : int ;
                   mutable ppu_ram     : bytes ;
                   mutable plt_idx     : int array ;
@@ -87,6 +89,8 @@ let mk_machine prg_mem chr_mem plt_mem = let reset_vec = Bytes.get_uint16_le prg
                               rom = prg_mem ;
                               chr_rom = chr_mem ;
                               ppu_ctrl = 0;
+                              ppu_scrl_x = 0;
+                              ppu_scrl_y = 0;
                               ppu_wr_addr = 0 ;
                               ppu_ram = Bytes.make 2048 '\000' ;
                               plt_idx = Array.make 32 0 ;
@@ -164,6 +168,7 @@ let ppu_draw_vram cpu file = let fd = open_out file in
                                 close_out fd
 
 let ppu_print_vram cpu file = let fd = open_out file in
+                                fprintf fd "PPU CTRL: %02x SCRL_X: %02x SCRL_Y: %02x\n" cpu.ppu_ctrl cpu.ppu_scrl_x cpu.ppu_scrl_y ;
                                 for y = 0 to 63 do
                                    for x = 0 to 31 do
                                       fprintf fd "%02X " (cc cpu.ppu_ram (32 * y + x))
@@ -177,6 +182,10 @@ let wr_byte cpu addr v = match addr with
                                                        Bytes.set_uint8 cpu.ram addr v
                             
                             | addr when addr = 0x2000 -> printf "PPU CTRL: %02x\n" v ; cpu.ppu_ctrl <- v
+
+                            | addr when addr = 0x2005 -> printf "PPU SCROLL: %02x\n" v ; 
+                                                         cpu.ppu_scrl_x <- cpu.ppu_scrl_y ;
+                                                         cpu.ppu_scrl_y <- v
 
                             | addr when addr = 0x2006 -> cpu.ppu_wr_addr <- ((cpu.ppu_wr_addr land 0xFF) lsl 8) lor v
 
