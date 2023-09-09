@@ -280,11 +280,11 @@ let exec cpu op ea immed = let arg = match ea with
   
     | ASL -> ( match ea with
                Some(addr) -> ( let shifted = arg lsl 1 in (* memory argument *)
-                               cpu.flg_c <- (0x100 land shifted) lsr 8 ;
+                               cpu.flg_c <- (0x80 land arg) lsr 7 ;
                                wr_mem_nz cpu addr (0xFF land shifted) )
 
              | None       -> ( let shifted = cpu.acc lsl 1 in (* accumulator *)
-                               cpu.flg_c <- (0x100 land shifted) lsr 8;
+                               cpu.flg_c <- (0x80 land cpu.acc) lsr 7;
                                set_acc_nz cpu (0xFF land shifted) ) )
 
     | BCC -> if cpu.flg_c = 0 then cpu.pc <- (Option.get ea)
@@ -381,21 +381,21 @@ let exec cpu op ea immed = let arg = match ea with
 
     | ROL -> ( match ea with
                  Some(addr) -> ( let shifted   = (arg lsl 1) lor cpu.flg_c  in (* memory argument *)
-                                 let new_carry = (0x100 land shifted) lsr 8 in
+                                 let new_carry = (0x80 land arg) lsr 7 in
                                  cpu.flg_c <- new_carry ;
                                  wr_mem_nz cpu addr (0xFF land shifted) )
 
                | None       -> ( let shifted = (cpu.acc lsl 1) lor cpu.flg_c in (* accumulator *)
-                                 let new_carry = (0x100 land shifted) lsr 8 in
+                                 let new_carry = (0x80 land cpu.acc) lsr 7 in
                                  cpu.flg_c <- new_carry;
                                  set_acc_nz cpu (0xFF land shifted) ) )
 
     | ROR -> ( match ea with
-                   Some(addr) -> ( let shifted = (arg lsr 1) lor (cpu.flg_c lsl 8)  in (* memory argument *)
+                   Some(addr) -> ( let shifted = (arg lsr 1) lor (cpu.flg_c lsl 7)  in (* memory argument *)
                                    cpu.flg_c <- arg land 1 ;
                                    wr_mem_nz cpu addr (0xFF land shifted) )
 
-                 | None       -> ( let shifted = (cpu.acc lsr 1) lor (cpu.flg_c lsl 8) in (* accumulator *)
+                 | None       -> ( let shifted = (cpu.acc lsr 1) lor (cpu.flg_c lsl 7) in (* accumulator *)
                                    cpu.flg_c <- cpu.acc land 1;
                                    set_acc_nz cpu (0xFF land shifted) ) )
 
@@ -455,6 +455,10 @@ let step cpu = let Instr (op, mode, sz, cnt) as inst  = decode (rd_byte cpu cpu.
 let run_cycles cpu n = cpu.cycles <- 0 ;
                        while cpu.cycles < n do step cpu done
 
+let store_segment seg path =  let fd = open_out path in
+                              output_bytes fd seg ;
+                              close_out fd
+
 let main fr path = let (prg, chr) = fetch_segments path      in
                    let plt        = load_palette "FCEUX.pal" in
                    let cpu = mk_machine prg chr plt          in
@@ -463,7 +467,9 @@ let main fr path = let (prg, chr) = fetch_segments path      in
                    pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
                    pp_bytes "CHR:" chr [0;1;2] ;
                    printf "PC: %x\n" cpu.pc ;
-    
+
+                   store_segment prg "prg.bin";
+
                    for i = 0 to 63 do
                     let (r,g,b) = plt.(i) in printf "%d -> (%02x, %02x, %02x)\n" i r g b
                    done;
