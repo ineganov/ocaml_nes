@@ -480,6 +480,7 @@ let main fr path = let (prg, chr) = fetch_segments path      in
                      if (cpu.ppu_ctrl land 0x80) <> 0 then nmi cpu ;
                    done;
     
+                   store_segment cpu.ram "ram.bin";
                    ppu_draw_vram cpu "img.ppm";
                    ppu_print_vram cpu "img.txt";
     
