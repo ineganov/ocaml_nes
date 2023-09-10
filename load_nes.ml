@@ -1,8 +1,9 @@
 open Decode
 
-let printf     = Printf.printf
-let fprintf    = Printf.fprintf
-let cc buf idx = Char.code (Bytes.get buf idx)
+let printf       = Printf.printf
+let fprintf      = Printf.fprintf
+let cc buf idx   = Char.code (Bytes.get buf idx)
+let blen         = Bytes.length
 
 
 exception Not_A_Nes_Fmt
@@ -71,7 +72,7 @@ type machine = {  mutable pc     : int ;
                 }
 
 
-let mk_machine prg_mem chr_mem plt_mem = let reset_vec = Bytes.get_uint16_le prg_mem (16384 - 4) in
+let mk_machine prg_mem chr_mem plt_mem = let reset_vec = Bytes.get_uint16_le prg_mem (blen prg_mem - 4) in
                             { pc     = reset_vec ;
                               sp     = 0xFD ;
                               acc    = 0 ;
@@ -197,14 +198,16 @@ let wr_byte cpu addr v = match addr with
 let stack_ea cpu = cpu.sp lor 0x0100
 
 let rd_byte cpu addr = match addr with
-                           addr when addr < 2048           -> cc cpu.ram addr
-                         | addr when addr = 0x2002         -> 0x80
-                         | addr when addr >= 65536 - 16384 -> cc cpu.rom (0x3FFF land addr)
+                           addr when addr < 2048   -> cc cpu.ram addr
+                         | addr when addr = 0x2002 -> 0x80
+                         | addr when addr >= (65536 - blen cpu.rom)
+                                                   -> cc cpu.rom (addr + blen cpu.rom - 65536)
                          | _  -> 0
 
 let rd_word cpu addr = match addr with
-                           addr when addr < 2048           -> Bytes.get_uint16_le cpu.ram addr
-                         | addr when addr >= 65536 - 16384 -> Bytes.get_uint16_le cpu.rom (0x3FFF land addr)
+                           addr when addr < 2048 -> Bytes.get_uint16_le cpu.ram addr
+                         | addr when addr >= (65536 - blen cpu.rom)
+                                                 -> Bytes.get_uint16_le cpu.rom (addr + blen cpu.rom - 65536)
                          | _  -> 0
 
 let fetch_param cpu sz = match sz with SZ_1 -> 0
@@ -218,13 +221,13 @@ let se_byte b = let bb = 0xFF land b in
 let fetch_ea cpu mode param = match mode with
       Accum   -> None
     | Abs     -> Some param
-    | Abs_X   -> Some (param + se_byte cpu.x)
-    | Abs_Y   -> Some (param + se_byte cpu.y)
+    | Abs_X   -> Some (0xFFFF land (param + cpu.x))
+    | Abs_Y   -> Some (0xFFFF land (param + cpu.y))
     | Immed   -> None
     | Implied -> None
     | Ind     -> Some (rd_word cpu param)
     | X_Ind   -> Some (rd_word cpu (0xFF land (param + cpu.x)))
-    | Ind_Y   -> Some ((rd_word cpu param) + se_byte cpu.y)
+    | Ind_Y   -> Some (0xFFFF land ((rd_word cpu param) + cpu.y))
     | Zpg     -> Some (0xFF land  param)
     | Zpg_X   -> Some (0xFF land (param + cpu.x))
     | Zpg_Y   -> Some (0xFF land (param + cpu.y))
@@ -262,6 +265,14 @@ let nmi cpu = let nmi_vect = rd_word cpu 0xFFFA in
                   cpu.sp <- cpu.sp - 3 ;
                   cpu.pc <- nmi_vect ;
                   print_endline "NMI" )
+
+let brk cpu = let brk_vect = rd_word cpu 0xFFFE in
+                  ( wr_byte cpu (stack_ea cpu - 0) ((0xFF00 land cpu.pc) lsr 8) ;
+                    wr_byte cpu (stack_ea cpu - 1)  (0xFF   land cpu.pc)  ;
+                    wr_byte cpu (stack_ea cpu - 2) (status_byte cpu) ;
+                    cpu.sp <- cpu.sp - 3 ;
+                    cpu.pc <- brk_vect ;
+                    print_endline "BRK" )
 
 let exec cpu op ea immed = let arg = match ea with 
                                 Some (addr) -> rd_byte cpu addr (* FIXME: suppress read on stores*)
@@ -303,7 +314,7 @@ let exec cpu op ea immed = let arg = match ea with
 
     | BPL -> if cpu.flg_n = 0 then cpu.pc <- (Option.get ea)
 
-    | BRK -> raise Break_Instn
+    | BRK -> brk cpu (* raise Break_Instn *)
   
     | BVC -> if cpu.flg_v = 0 then cpu.pc <- (Option.get ea)
 
@@ -461,18 +472,15 @@ let store_segment seg path =  let fd = open_out path in
 
 let main fr path = let (prg, chr) = fetch_segments path      in
                    let plt        = load_palette "FCEUX.pal" in
-                   let cpu = mk_machine prg chr plt          in
+                   let cpu        = mk_machine prg chr plt   in
+                   let prg_len    = blen prg                 in
 
-                   pp_bytes "PRG END:" prg [16384 - 1; 16384 - 2; 16384 - 3; 16384 - 4; 16384 - 5; 16384 - 6; ] ;
+                   pp_bytes "PRG END:" prg [prg_len - 1; prg_len - 2; prg_len - 3; prg_len - 4; prg_len - 5; prg_len - 6; ] ;
                    pp_bytes "PRG STA:" prg [ 0x70; 0x71; 0x72 ] ;
                    pp_bytes "CHR:" chr [0;1;2] ;
                    printf "PC: %x\n" cpu.pc ;
 
                    store_segment prg "prg.bin";
-
-                   for i = 0 to 63 do
-                    let (r,g,b) = plt.(i) in printf "%d -> (%02x, %02x, %02x)\n" i r g b
-                   done;
 
                    for i = 0 to (int_of_string fr) do
                      printf "FRAME %d\n" i;
