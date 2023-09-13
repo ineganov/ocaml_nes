@@ -142,10 +142,11 @@ let ppu_draw_vram cpu file = let fd = open_out file in
                                       let fine_y       = scrolled_y land 0x7                              in
                                       let tile_y_loc   = if tile_y > 29 then tile_y - 30 else tile_y      in
                                       let nm_tbl_start = (cpu.ppu_ctrl land 2) lsr 1                      in
+                                      let bg_ptrn_start= (cpu.ppu_ctrl land 0x10) lsr 4                   in 
                                       let nm_tbl_ofst  = if tile_y > 29 then 1 lxor nm_tbl_start 
                                                                         else nm_tbl_start                 in
                                       let nm_tbl_byte  = cc cpu.ppu_ram (nm_tbl_ofst * 1024 + 32 * tile_y_loc + tile_x) in
-                                      let ptrn_addr    = 4096 + nm_tbl_byte * 16 + fine_y                 in
+                                      let ptrn_addr    = bg_ptrn_start * 4096 + nm_tbl_byte * 16 + fine_y in
                                       let ptrn_byte_lo = cc cpu.chr_rom (ptrn_addr + 0)                   in
                                       let ptrn_byte_hi = cc cpu.chr_rom (ptrn_addr + 8)                   in
                                       let attr_addr    = 32 * 30 + 8 * (tile_y_loc lsr 2) + (tile_x lsr 2)    in
@@ -193,6 +194,9 @@ let wr_byte cpu addr v = match addr with
                             | addr when addr = 0x2007 -> printf "  PPU WR: %04x <- %02x\n" cpu.ppu_wr_addr v ;
                                                          ppu_ram_wr_hmap cpu v ;
                                                          cpu.ppu_wr_addr <- 0xFFFF land (cpu.ppu_wr_addr + 1) ;
+
+                            | addr when addr >= 0x6000 && addr < 0x6100 -> 
+                                                         printf "  DBG WR: %04x <- %02x (%c)\n" addr v (Char.chr v)
                             | _  -> ()
 
 let stack_ea cpu = cpu.sp lor 0x0100
@@ -204,11 +208,19 @@ let rd_byte cpu addr = match addr with
                                                    -> cc cpu.rom (addr + blen cpu.rom - 65536)
                          | _  -> 0
 
-let rd_word cpu addr = match addr with
-                           addr when addr < 2048 -> Bytes.get_uint16_le cpu.ram addr
-                         | addr when addr >= (65536 - blen cpu.rom)
-                                                 -> Bytes.get_uint16_le cpu.rom (addr + blen cpu.rom - 65536)
-                         | _  -> 0
+let rd_word cpu addr = let lo = rd_byte cpu (addr + 0) in
+                       let hi = rd_byte cpu (addr + 1) in
+                         (hi lsl 8) lor lo
+
+let rd_word_zpg cpu addr = let lo = rd_byte cpu (0xFF land (addr + 0)) in
+                           let hi = rd_byte cpu (0xFF land (addr + 1)) in
+                             (hi lsl 8) lor lo
+
+let rd_word_same_pg cpu addr = let addr_hi = (0xFF00 land addr) lor (0xFF land (addr + 1)) in
+                               let lo = rd_byte cpu addr     in
+                               let hi = rd_byte cpu addr_hi  in
+                               printf "HERE: 0x%04x, 0x%04x\n" addr addr_hi ;
+                               (hi lsl 8) lor lo
 
 let fetch_param cpu sz = match sz with SZ_1 -> 0
                                      | SZ_2 -> rd_byte cpu (cpu.pc+1)
@@ -225,9 +237,9 @@ let fetch_ea cpu mode param = match mode with
     | Abs_Y   -> Some (0xFFFF land (param + cpu.y))
     | Immed   -> None
     | Implied -> None
-    | Ind     -> Some (rd_word cpu param)
-    | X_Ind   -> Some (rd_word cpu (0xFF land (param + cpu.x)))
-    | Ind_Y   -> Some (0xFFFF land ((rd_word cpu param) + cpu.y))
+    | Ind     -> Some (rd_word_same_pg cpu param)
+    | X_Ind   -> Some (rd_word_zpg cpu (param + cpu.x))
+    | Ind_Y   -> Some (0xFFFF land ((rd_word_zpg cpu param) + cpu.y))
     | Zpg     -> Some (0xFF land  param)
     | Zpg_X   -> Some (0xFF land (param + cpu.x))
     | Zpg_Y   -> Some (0xFF land (param + cpu.y))
@@ -238,8 +250,8 @@ let set_acc_nz cpu v = cpu.acc <- v ;
                        cpu.flg_n <- (0x80 land v) lsr 7 ;
                        cpu.flg_z <- if v = 0 then 1 else 0
 
-let cmp_nzc cpu a b = let n_arg = 0xFF land ((0xFF lxor b) + 1) in
-                      let sum   = a + n_arg                     in
+let cmp_nzc cpu a b = let n_arg = (0xFF lxor b) + 1 in
+                      let sum   = a + n_arg         in
                      ( cpu.flg_c <- (0x100 land sum) lsr 8 ;
                        cpu.flg_n <- ( 0x80 land sum) lsr 7 ;
                        cpu.flg_z <- if (0xFF land sum) = 0 then 1 else 0 ;)
@@ -259,8 +271,8 @@ let wr_mem_nz cpu addr v = wr_byte cpu addr v;
                            cpu.flg_z <- if v = 0 then 1 else 0
 
 let nmi cpu = let nmi_vect = rd_word cpu 0xFFFA in
-                ( wr_byte cpu (stack_ea cpu - 0) ((0xFF00 land (cpu.pc - 1)) lsr 8) ;
-                  wr_byte cpu (stack_ea cpu - 1)  (0xFF   land (cpu.pc - 1))  ;
+                ( wr_byte cpu (stack_ea cpu - 0) ((0xFF00 land cpu.pc) lsr 8) ;
+                  wr_byte cpu (stack_ea cpu - 1)  (0xFF   land cpu.pc)  ;
                   wr_byte cpu (stack_ea cpu - 2) (status_byte cpu) ;
                   cpu.sp <- cpu.sp - 3 ;
                   cpu.pc <- nmi_vect ;
@@ -282,7 +294,7 @@ let exec cpu op ea immed = let arg = match ea with
       ADC -> let sum = cpu.acc + arg + cpu.flg_c in 
                (  cpu.flg_c <- (0x100 land sum) lsr 8 ;
                   cpu.flg_n <-  (0x80 land sum) lsr 7 ;
-                  cpu.flg_z <- if cpu.acc = 0 then 1 else 0 ;
+                  cpu.flg_z <- if (0xFF land sum) = 0 then 1 else 0 ;
                   cpu.flg_v <- if ((cpu.acc land 0x80) = ( arg land 0x80))
                                && ((cpu.acc land 0x80) <> (sum land 0x80)) then 1 else 0 ;
                   cpu.acc   <- 0xFF land sum ; )
@@ -381,7 +393,7 @@ let exec cpu op ea immed = let arg = match ea with
     | PHA -> ( wr_byte cpu (stack_ea cpu) cpu.acc ;
                cpu.sp <- cpu.sp - 1 )
 
-    | PHP -> ( wr_byte cpu (stack_ea cpu) (status_byte cpu) ;
+    | PHP -> ( wr_byte cpu (stack_ea cpu) (0x10 lor (status_byte cpu)) ;
                cpu.sp <- cpu.sp - 1 )
 
     | PLA -> ( cpu.sp <- cpu.sp + 1 ;
@@ -413,7 +425,7 @@ let exec cpu op ea immed = let arg = match ea with
     | RTI -> let rti_flags = rd_byte cpu (stack_ea cpu + 1) in
              let new_pc    = rd_word cpu (stack_ea cpu + 2) in
               ( set_flags cpu rti_flags ;
-                cpu.pc <- new_pc + 1;
+                cpu.pc <- new_pc;
                 cpu.sp <- cpu.sp + 3 )
 
     | RTS -> let new_pc = rd_word cpu (stack_ea cpu + 1) in
@@ -482,13 +494,18 @@ let main fr path = let (prg, chr) = fetch_segments path      in
 
                    store_segment prg "prg.bin";
 
-                   for i = 0 to (int_of_string fr) do
-                     printf "FRAME %d\n" i;
-                     run_cycles cpu 28333 ;
-                     if (cpu.ppu_ctrl land 0x80) <> 0 then nmi cpu ;
-                   done;
-    
+                   (*try*)
+                     for i = 0 to (int_of_string fr) do
+                       printf "FRAME %d\n" i;
+                       run_cycles cpu 28333 ;
+                       if (cpu.ppu_ctrl land 0x80) <> 0 then nmi cpu ;
+                     done;
+                   (*with Illegal_Instn -> print_endline "Got an Illegal instruction!";
+                      | ShouldNeverHappen -> print_endline "Failed mysteriously";
+                      | _ -> print_endline "What?" ; *)
+
                    store_segment cpu.ram "ram.bin";
+                   store_segment cpu.chr_rom "chr.bin";
                    ppu_draw_vram cpu "img.ppm";
                    ppu_print_vram cpu "img.txt";
     
