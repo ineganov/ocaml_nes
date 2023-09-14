@@ -857,3 +857,5 @@ let show_full_instn i pc p = match i with
 let isize_incr = function SZ_1 -> 1
                         | SZ_2 -> 2
                         | SZ_3 -> 3
+
+let is_not_store op = op <> STA && op <> STX && op <> STY

@@ -67,6 +67,7 @@ type machine = {  mutable pc     : int ;
                   mutable ppu_scrl_y  : int ;
                   mutable ppu_wr_addr : int ;
                   mutable ppu_ram     : bytes ;
+                  mutable ppu_rd_buf  : int ;
                   mutable plt_idx     : int array ;
                   mutable plt         : (int * int * int) array
                 }
@@ -95,6 +96,7 @@ let mk_machine prg_mem chr_mem plt_mem = let reset_vec = Bytes.get_uint16_le prg
                               ppu_wr_addr = 0 ;
                               ppu_ram = Bytes.make 2048 '\000' ;
                               plt_idx = Array.make 32 0 ;
+                              ppu_rd_buf = 0;
                               plt = plt_mem}
 
 let status_byte cpu = (cpu.flg_n lsl 7)
@@ -126,6 +128,14 @@ let show_flags cpu = let cap_str vs = List.map (fun (x,y) -> if x > 0 then Strin
                                   (cpu.flg_c, "c") ; ])
 
 let show_cpu cpu = Printf.sprintf "ACC:%02X X:%02X Y:%02X SP:%02X -- %s" cpu.acc cpu.x cpu.y cpu.sp (show_flags cpu)
+
+let ppu_ram_rd cpu = match cpu.ppu_wr_addr with
+                      | addr when addr  < 0x2000 -> printf "PPU CHR RD: %04x %02x\n" addr cpu.ppu_ctrl; Bytes.get_uint8 cpu.chr_rom addr
+                      | addr when addr >= 0x2000 && addr < 0x2400 -> Bytes.get_uint8 cpu.ppu_ram (addr land 0x3FF)
+                      | addr when addr >= 0x2800 && addr < 0x2C00 -> Bytes.get_uint8 cpu.ppu_ram ((addr land 0x3FF) lor 0x400)
+                      | addr when addr >= 0x3f00 && addr < 0x3f20 -> cpu.plt_idx.(addr land 0x1F)
+                      | other -> printf "PPU RD other: %04x\n" other; 0
+
 
 let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
                                    addr when addr >= 0x2000 && addr < 0x2400 -> Bytes.set_uint8 cpu.ppu_ram (addr land 0x3FF) v
@@ -204,6 +214,10 @@ let stack_ea cpu = cpu.sp lor 0x0100
 let rd_byte cpu addr = match addr with
                            addr when addr < 2048   -> cc cpu.ram addr
                          | addr when addr = 0x2002 -> 0x80
+                         | addr when addr = 0x2007 -> let rd_result = cpu.ppu_rd_buf in
+                                                        cpu.ppu_rd_buf <- ppu_ram_rd cpu ;
+                                                        cpu.ppu_wr_addr <- 0xFFFF land (cpu.ppu_wr_addr + 1);
+                                                        rd_result
                          | addr when addr >= (65536 - blen cpu.rom)
                                                    -> cc cpu.rom (addr + blen cpu.rom - 65536)
                          | _  -> 0
@@ -287,7 +301,7 @@ let brk cpu = let brk_vect = rd_word cpu 0xFFFE in
                     print_endline "BRK" )
 
 let exec cpu op ea immed = let arg = match ea with 
-                                Some (addr) -> rd_byte cpu addr (* FIXME: suppress read on stores*)
+                                Some (addr) -> if (is_not_store op) then rd_byte cpu addr else immed
                               | None        -> immed
                             in match op with
 

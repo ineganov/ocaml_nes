@@ -81,3 +81,4 @@ val show_opcode      : opcode -> string
 val show_instn       : instn  -> string
 val show_full_instn  : instn -> int -> int -> string
 val isize_incr       : inst_size -> int
+val is_not_store     : opcode -> bool
