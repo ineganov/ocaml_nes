@@ -67,9 +67,11 @@ type machine = {  mutable pc     : int ;
                   mutable ppu_scrl_y  : int ;
                   mutable ppu_wr_addr : int ;
                   mutable ppu_ram     : bytes ;
+                  mutable oam_ram     : bytes ;
                   mutable ppu_rd_buf  : int ;
                   mutable plt_idx     : int array ;
-                  mutable plt         : (int * int * int) array
+                  mutable plt         : (int * int * int) array ;
+                  mutable framebuf    : bytes ; 
                 }
 
 
@@ -95,9 +97,12 @@ let mk_machine prg_mem chr_mem plt_mem = let reset_vec = Bytes.get_uint16_le prg
                               ppu_scrl_y = 0;
                               ppu_wr_addr = 0 ;
                               ppu_ram = Bytes.make 2048 '\000' ;
+                              oam_ram = Bytes.make 256 '\000' ;
                               plt_idx = Array.make 32 0 ;
                               ppu_rd_buf = 0;
-                              plt = plt_mem}
+                              plt = plt_mem;
+                              framebuf = Bytes.make (256*240) '\000' ;
+                              }
 
 let status_byte cpu = (cpu.flg_n lsl 7)
                   lor (cpu.flg_v lsl 6)
@@ -143,41 +148,66 @@ let ppu_ram_wr_hmap cpu v = match cpu.ppu_wr_addr with
                                  | addr when addr >= 0x3f00 && addr < 0x3f20 -> cpu.plt_idx.(addr land 0x1F) <- v
                                  | other -> printf "PPU WR other: %04x\n" other
 
-let ppu_draw_vram cpu file = let fd = open_out file in
-                                fprintf fd "P3 256 240 255\n" ;
-                                for pix_y = 0 to 239 do
-                                   for tile_x = 0 to 31 do
-                                      let scrolled_y   = pix_y + cpu.ppu_scrl_y                           in
-                                      let tile_y       = scrolled_y lsr 3                                 in
-                                      let fine_y       = scrolled_y land 0x7                              in
-                                      let tile_y_loc   = if tile_y > 29 then tile_y - 30 else tile_y      in
-                                      let nm_tbl_start = (cpu.ppu_ctrl land 2) lsr 1                      in
-                                      let bg_ptrn_start= (cpu.ppu_ctrl land 0x10) lsr 4                   in 
-                                      let nm_tbl_ofst  = if tile_y > 29 then 1 lxor nm_tbl_start 
-                                                                        else nm_tbl_start                 in
-                                      let nm_tbl_byte  = cc cpu.ppu_ram (nm_tbl_ofst * 1024 + 32 * tile_y_loc + tile_x) in
-                                      let ptrn_addr    = bg_ptrn_start * 4096 + nm_tbl_byte * 16 + fine_y in
-                                      let ptrn_byte_lo = cc cpu.chr_rom (ptrn_addr + 0)                   in
-                                      let ptrn_byte_hi = cc cpu.chr_rom (ptrn_addr + 8)                   in
-                                      let attr_addr    = 32 * 30 + 8 * (tile_y_loc lsr 2) + (tile_x lsr 2)    in
-                                      let attr_byte    = cc cpu.ppu_ram (nm_tbl_ofst * 1024 + attr_addr)  in
-                                      let is_rt        = (tile_x land 2) lsr 1                            in
-                                      let is_bot       = (tile_y land 2) lsr 1                            in
-                                      let shamt        = 2 * (2 * is_bot + is_rt)                         in
-                                      let attr_bits    = 3 land (attr_byte lsr shamt)                     in
 
-                                      let bit_col bit  =  (attr_bits lsl 2) lor
-                                                          (((ptrn_byte_hi lsr (7-bit)) land 1) lsl 1) lor
-                                                          ((ptrn_byte_lo lsr (7-bit)) land 1)             in
-                                      let colours      = List.map (fun l -> cpu.plt.( cpu.plt_idx.(bit_col l))) [0; 1; 2; 3; 4; 5; 6; 7] in
+let render_bg cpu = for pix_y = 0 to 239 do
+                      for tile_x = 0 to 31 do
+                        let scrolled_y   = pix_y + cpu.ppu_scrl_y                           in
+                        let tile_y       = scrolled_y lsr 3                                 in
+                        let fine_y       = scrolled_y land 0x7                              in
+                        let tile_y_loc   = if tile_y > 29 then tile_y - 30 else tile_y      in
+                        let nm_tbl_start = (cpu.ppu_ctrl land 2) lsr 1                      in
+                        let bg_ptrn_start= (cpu.ppu_ctrl land 0x10) lsr 4                   in 
+                        let nm_tbl_ofst  = if tile_y > 29 then 1 lxor nm_tbl_start 
+                                                          else nm_tbl_start                 in
+                        let nm_tbl_byte  = cc cpu.ppu_ram (nm_tbl_ofst * 1024 + 32 * tile_y_loc + tile_x) in
+                        let ptrn_addr    = bg_ptrn_start * 4096 + nm_tbl_byte * 16 + fine_y in
+                        let ptrn_byte_lo = cc cpu.chr_rom (ptrn_addr + 0)                   in
+                        let ptrn_byte_hi = cc cpu.chr_rom (ptrn_addr + 8)                   in
+                        let attr_addr    = 32 * 30 + 8 * (tile_y_loc lsr 2) + (tile_x lsr 2)    in
+                        let attr_byte    = cc cpu.ppu_ram (nm_tbl_ofst * 1024 + attr_addr)  in
+                        let is_rt        = (tile_x land 2) lsr 1                            in
+                        let is_bot       = (tile_y land 2) lsr 1                            in
+                        let shamt        = 2 * (2 * is_bot + is_rt)                         in
+                        let attr_bits    = 3 land (attr_byte lsr shamt)                     in
+                   
+                        let bit_col bit  =  (attr_bits lsl 2) lor
+                                            (((ptrn_byte_hi lsr (7-bit)) land 1) lsl 1) lor
+                                            ((ptrn_byte_lo lsr (7-bit)) land 1)             in
 
-                                        List.iter (fun (r,g,b) -> fprintf fd "%3d %3d %3d  " r g b) colours ;
+                        for p = 0 to 7 do
+                          Bytes.set_uint8 cpu.framebuf (pix_y * 256 + tile_x * 8 + p) cpu.plt_idx.(bit_col p)
+                        done 
+                      done 
+                    done
 
-                                        (* printf "%s: x=%d y=%d y_lsr=%d %04X -> %02X\n" file x y (y lsr 4) (32 * (y lsr 4) + x) nm_tbl_byte ; *)
-                                   done ;
-                                   fprintf fd "\n" ;
-                                done ;
-                                close_out fd
+let render_sprite cpu idx = let pos_y    = Bytes.get_uint8 cpu.oam_ram (idx * 4 + 0) in
+                            let ptrn_idx = Bytes.get_uint8 cpu.oam_ram (idx * 4 + 1) in
+                            let attr     = Bytes.get_uint8 cpu.oam_ram (idx * 4 + 2) in
+                            let pos_x    = Bytes.get_uint8 cpu.oam_ram (idx * 4 + 3) in
+
+                            for y = 0 to 15 do
+                              let half      = y lsr 3                                          in
+                              let ptrn_side = ptrn_idx land 1                                  in
+                              let ptrn_addr = ptrn_side * 4096 + (ptrn_idx land 0xFE + half) * 16 + (y land 0x7) in
+                              let ptrn_byte_lo = cc cpu.chr_rom (ptrn_addr + 0)                in
+                              let ptrn_byte_hi = cc cpu.chr_rom (ptrn_addr + 8)                in
+                              let bit_col bit  = ((attr land 0x3) lsl 2) lor
+                                                 (((ptrn_byte_hi lsr (7-bit)) land 1) lsl 1) lor
+                                                 ((ptrn_byte_lo lsr (7-bit)) land 1)          in
+                                for x = 0 to 7 do
+                                  Bytes.set_uint8 cpu.framebuf ( (pos_y + y)*256 + pos_x + x ) (16 + (bit_col x))
+                                done
+                            done
+
+
+let print_fb cpu file  = let fd = open_out file in
+                           fprintf fd "P3 256 240 255\n" ;
+                           for pix_y = 0 to 239 do
+                             for pix_x = 0 to 255 do
+                               let (r,g,b) = cpu.plt.( Bytes.get_uint8 cpu.framebuf (pix_y * 256 + pix_x)) in
+                                 fprintf fd "%3d %3d %3d  " r g b
+                             done
+                           done
 
 let ppu_print_vram cpu file = let fd = open_out file in
                                 fprintf fd "PPU CTRL: %02x SCRL_X: %02x SCRL_Y: %02x\n" cpu.ppu_ctrl cpu.ppu_scrl_x cpu.ppu_scrl_y ;
@@ -204,6 +234,13 @@ let wr_byte cpu addr v = match addr with
                             | addr when addr = 0x2007 -> printf "  PPU WR: %04x <- %02x\n" cpu.ppu_wr_addr v ;
                                                          ppu_ram_wr_hmap cpu v ;
                                                          cpu.ppu_wr_addr <- 0xFFFF land (cpu.ppu_wr_addr + 1) ;
+
+                            | addr when addr = 0x4014 -> printf "  OAM DMA: %02x\n" v ;
+                                                         for i = 0 to 255 do
+                                                           let bb = cc cpu.ram (((0xFF land v) lsl 8) lor i) in
+                                                             printf "oamdma: %d\n" i;
+                                                             Bytes.set_uint8 cpu.oam_ram i bb; 
+                                                         done
 
                             | addr when addr >= 0x6000 && addr < 0x6100 -> 
                                                          printf "  DBG WR: %04x <- %02x (%c)\n" addr v (Char.chr v)
@@ -520,7 +557,11 @@ let main fr path = let (prg, chr) = fetch_segments path      in
 
                    store_segment cpu.ram "ram.bin";
                    store_segment cpu.chr_rom "chr.bin";
-                   ppu_draw_vram cpu "img.ppm";
+                   store_segment cpu.oam_ram "oam.bin";
+                   render_bg cpu ;
+                   render_sprite cpu 0 ;
+                   render_sprite cpu 1 ;
+                   print_fb cpu "img.ppm" ;
                    ppu_print_vram cpu "img.txt";
     
                    printf "Done %d cycles. Bye!\n" cpu.cycles ;;
