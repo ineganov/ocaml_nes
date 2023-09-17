@@ -195,9 +195,12 @@ let render_sprite cpu idx = let pos_y    = Bytes.get_uint8 cpu.oam_ram (idx * 4 
                                                  (((ptrn_byte_hi lsr (7-bit)) land 1) lsl 1) lor
                                                  ((ptrn_byte_lo lsr (7-bit)) land 1)          in
                                 for x = 0 to 7 do
-                                  Bytes.set_uint8 cpu.framebuf ( (pos_y + y)*256 + pos_x + x ) (16 + (bit_col x))
+                                  if pos_y + y < 240 && pos_x + x < 256 && bit_col x <> 0 then
+                                    Bytes.set_uint8 cpu.framebuf ( (pos_y + y)*256 + pos_x + x ) cpu.plt_idx.(16 + (bit_col x))
                                 done
                             done
+
+let render_sprites cpu = for i = 0 to 63 do render_sprite cpu i done
 
 
 let print_fb cpu file  = let fd = open_out file in
@@ -555,12 +558,17 @@ let main fr path = let (prg, chr) = fetch_segments path      in
                       | ShouldNeverHappen -> print_endline "Failed mysteriously";
                       | _ -> print_endline "What?" ; *)
 
+                   for i = 0 to Array.length cpu.plt_idx - 1 do
+                      let cur_idx = cpu.plt_idx.(i)   in
+                      let (r,g,b) = cpu.plt.(cur_idx) in
+                      printf "Idx %2d: [%d] -> [ #%02x%02x%02x ]\n" i cur_idx r g b;
+                   done;
+
                    store_segment cpu.ram "ram.bin";
                    store_segment cpu.chr_rom "chr.bin";
                    store_segment cpu.oam_ram "oam.bin";
                    render_bg cpu ;
-                   render_sprite cpu 0 ;
-                   render_sprite cpu 1 ;
+                   render_sprites cpu;
                    print_fb cpu "img.ppm" ;
                    ppu_print_vram cpu "img.txt";
     
