@@ -1,4 +1,6 @@
-
+(* Batch-mode NES emulator  *)
+(* MIT License              *)
+(* Ilya Neganov, 2023       *)
 
 type opcode = ADC (* add with carry                   *)
             | AND (* and (with accumulator)           *)

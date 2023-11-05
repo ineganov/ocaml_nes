@@ -1,3 +1,7 @@
+(* Batch-mode NES emulator  *)
+(* MIT License              *)
+(* Ilya Neganov, 2023       *)
+
 open Decode
 
 let printf       = Printf.printf

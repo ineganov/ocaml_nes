@@ -1,11 +1,14 @@
 
 
-.PHONY: all
+.PHONY: all run opt dbg
 
 all: load_nes
 
 run:
-	./load_nes ~/musings/build/bsc_playground/fread/roms/battle_city.nes
+	time ./load_nes 650 your_rom.nes > run.log
+
+run_opt:
+	time ./load_nes_opt 650 your_rom.nes > run.log
 
 decode.cmi: decode.mli
 	ocamlc -c decode.mli
